@@ -5,6 +5,7 @@ namespace NotificationChannels\Fcm;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Notifications\Events\NotificationFailed;
+use Illuminate\Notifications\Events\NotificationSent;
 use Illuminate\Notifications\Notification;
 use Kreait\Firebase\Exception\MessagingException;
 use Kreait\Firebase\Messaging\CloudMessage;
@@ -25,7 +26,7 @@ class FcmChannel
     /**
      * FcmChannel constructor.
      *
-     * @param  \Illuminate\Contracts\Events\Dispatcher  $dispatcher
+     * @param \Illuminate\Contracts\Events\Dispatcher $dispatcher
      */
     public function __construct(Dispatcher $dispatcher)
     {
@@ -67,21 +68,15 @@ class FcmChannel
             $this->fcmProject = $notification->fcmProject($notifiable, $fcmMessage);
         }
 
+        $tokens = is_array($token) ? $token : [$token];
         $responses = [];
-
-        try {
-            if (is_array($token)) {
-                // Use multicast when there are multiple recipients
-                $partialTokens = array_chunk($token, self::MAX_TOKEN_PER_REQUEST, false);
-                foreach ($partialTokens as $tokens) {
-                    $responses[] = $this->sendToFcmMulticast($fcmMessage, $tokens);
-                }
-            } else {
-                $responses[] = $this->sendToFcm($fcmMessage, $token);
+        foreach ($tokens as $token) {
+            try {
+                $responses[] = $result = $this->sendToFcm($fcmMessage, $token);
+                $this->successNotification($notifiable, $notification, $result);
+            } catch (MessagingException $exception) {
+                $this->failedNotification($notifiable, $notification, $exception, $token);
             }
-        } catch (MessagingException $exception) {
-            $this->failedNotification($notifiable, $notification, $exception, $token);
-            throw CouldNotSendNotification::serviceRespondedWithAnError($exception);
         }
 
         return $responses;
@@ -155,8 +150,18 @@ class FcmChannel
             [
                 'message' => $exception->getMessage(),
                 'exception' => $exception,
-                'token' => $token,
+                'token' => $token
             ]
+        ));
+    }
+
+    protected function successNotification($notifiable, Notification $notification, $result)
+    {
+        return $this->events->dispatch(new NotificationSent(
+            $notifiable,
+            $notification,
+            self::class,
+            $result
         ));
     }
 }
